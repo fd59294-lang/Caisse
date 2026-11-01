@@ -35,6 +35,9 @@ h2 { margin: 0 0 8px; font-size: 1.35rem; } h3 { margin: 18px 0 8px; font-size: 
 .onglet .ico { font-size: 1.25rem; } .onglet .lib { font-size: .72rem; white-space: nowrap; }
 .onglet.actif { background: rgba(255, 255, 255, .18); }
 .utilisateur { background: rgba(255, 255, 255, .12); color: #fff; border: 0; flex-direction: column; gap: 0; min-height: 52px; }
+.drive { background: rgba(255, 255, 255, .12); color: #fff; border: 0; flex-direction: column; gap: 0; min-height: 52px; padding: 4px 10px; }
+.drive small { font-size: .7rem; } .drive.attente { background: #E65100; }
+.bandeau.info { background: #E3F2FD; color: #0D47A1; display: flex; align-items: center; justify-content: center; gap: 12px; }
 .utilisateur small { font-size: .7rem; opacity: .8; }
 .bandeau { padding: 6px 12px; text-align: center; font-weight: 600; font-size: .95rem; }
 .bandeau.formation { background: #FFE0B2; color: #7A3E00; }

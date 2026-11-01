@@ -1,7 +1,7 @@
 /* Caisse du Comité des Fêtes — application autonome, hors ligne, pour tablette Android. */
 "use strict";
 
-const VERSION_APP = "1.0.0";
+const VERSION_APP = "1.1.0";
 const $app = document.getElementById("app");
 const S = {
   params: null, categories: [], articles: [], moyens: [], utilisateurs: [], session: null,
@@ -98,6 +98,7 @@ async function initialiser() {
     S.params = { ...paramsDefaut(), ...p };
     await recharger();
     await preparerLogo();
+    await majEtatDrive();
     try { await navigator.storage?.persist?.(); } catch (e) { /* facultatif */ }
   } catch (e) {
     $app.innerHTML = `<div class="carte centre"><h2>Démarrage impossible</h2><p>${h(e.message)}</p></div>`;
@@ -134,12 +135,23 @@ function enTete() {
     <div class="marque"><strong>${h(S.params.nomAsso)}</strong><span>${info}</span></div>
     <nav>${onglets.map(([v, l, i]) => `<button class="onglet ${S.vue === v ? "actif" : ""}" data-a="vue" data-v="${v}">
       <span class="ico">${i}</span><span class="lib">${l}</span></button>`).join("")}</nav>
+    ${boutonDrive()}
     <button class="utilisateur" data-a="verrouiller" title="Changer d'utilisateur">👤 ${h(S.user.nom)}<small>Verrouiller</small></button>
   </header>`;
 }
 
+function boutonDrive() {
+  if (!driveConfigure() || !S.etatDrive) return "";
+  const e = S.etatDrive;
+  const lib = S.envoiDrive ? "Envoi…" : !navigator.onLine ? "Hors ligne" : e.total ? `${e.total} à envoyer` : "À jour";
+  return `<button class="drive ${e.total ? "attente" : ""}" data-a="synchroniser" ${S.envoiDrive ? "disabled" : ""}><span class="ico">☁️</span><small>${lib}</small></button>`;
+}
+
 function bandeaux() {
   let b = "";
+  if (driveConfigure() && navigator.onLine && S.etatDrive?.z && !S.envoiDrive)
+    b += `<div class="bandeau info">Internet disponible : ${S.etatDrive.z} ticket(s) Z à envoyer au Drive du comité
+      <button class="mini" data-a="synchroniser">Envoyer maintenant</button></div>`;
   if (S.params.formation) b += `<div class="bandeau formation">MODE FORMATION — les ventes ne sont pas enregistrées</div>`;
   if (estResponsable() && S.utilisateurs.some(u => u.pin === "1234"))
     b += `<div class="bandeau alerte">Le code 1234 est encore utilisé : changez-le dans Réglages → Utilisateurs.</div>`;
@@ -456,6 +468,7 @@ async function finaliserVente() {
   const ops = [];
   if (!formation) {
     S.params.compteurTicket = (S.params.compteurTicket || 0) + 1;
+    S.params.derniereModif = new Date().toISOString();
     numero = String(S.params.compteurTicket);
     ops.push(["params", S.params]);
     for (const l of lignes) {
@@ -467,7 +480,10 @@ async function finaliserVente() {
     caissier: S.user.nom, manifestation: S.session?.manifestation || "Formation", lignes,
     sousTotalC: t.sousTotalC, remiseTicketC: t.remiseTicketC, totalC: t.totalC,
     paiements: m.paiements, renduC, annule: false, formation };
-  if (!formation) { ops.push(["tickets", ticket]); await DB.lot(ops); }
+  if (!formation) {
+    ops.push(["tickets", ticket]); await DB.lot(ops);
+    if (S.etatDrive) S.etatDrive = { ...S.etatDrive, modifs: true, total: S.etatDrive.z || 1 };
+  }
   S.cache = {};
   S.derniereVente = ticket;
   S.panier = []; S.remiseTicket = null; S.modal = null;
@@ -755,10 +771,13 @@ A.validerCloture = async () => {
   const d = await donneesSession(s);
   s.z = calculerZ(s, d.tickets, d.mouvements);
   await DB.ecrire("sessions", s);
+  await sauverParams({ derniereModif: new Date().toISOString() });
   S.session = null; S.cache = {};
   S.modal = { type: "fin-z", session: s };
+  await majEtatDrive();
   render();
   if (S.params.impression !== "aucune") imprimerZ(s).catch(erreur);
+  synchroDiscrete();
 };
 function modalFinZ(m) {
   const z = m.session.z;
@@ -768,7 +787,8 @@ function modalFinZ(m) {
       <div class="chiffre ${z.ecartC === 0 ? "" : "rouge"}"><span>Écart espèces</span><strong>${eur(z.ecartC)}</strong></div></div>
     <p>Envoyez le fichier pour la compta : il s'importe tel quel dans l'écran « Import Excel » du logiciel du comité.</p>
     <div class="boutons colonne">
-      <button class="principal grand" data-a="exporterZ" data-id="${m.session.id}">📤 Fichier pour la compta (Excel)</button>
+      ${driveConfigure() ? `<button class="principal grand" data-a="synchroniser">☁️ Envoyer au Drive du comité</button>` : ""}
+      <button class="${driveConfigure() ? "secondaire" : "principal grand"}" data-a="exporterZ" data-id="${m.session.id}">📤 Fichier pour la compta (Excel)</button>
       <button class="secondaire" data-a="imprimerZ" data-id="${m.session.id}">🖨️ Imprimer le ticket Z</button>
       <button class="secondaire" data-a="sauvegarder">💾 Sauvegarder toute la caisse</button>
       <button class="secondaire" data-a="fermer">Terminer</button></div></div>`;
@@ -942,8 +962,7 @@ function lignesCompta(s) {
   return lignes;
 }
 
-A.exporterZ = async d => {
-  const s = await DB.lire("sessions", d.id);
+async function fichierZ(s) {
   const z = s.z;
   const nonEncaisse = z.parMoyen.filter(m => !m.encaisse);
   const resume = [["Manifestation", s.manifestation], ["Caisse n°", s.numero], ["Ouverture", `${dateFr(s.ouverteLe)} ${heureFr(s.ouverteLe)} (${s.ouvertePar})`],
@@ -957,9 +976,61 @@ A.exporterZ = async d => {
     ["Ventes par article", ["Article", "Catégorie", "Quantité", "Montant"], z.parArticle.map(a => [a.nom, a.categorie, a.qte, enEuros(a.montantC)])],
     ["Ticket Z", ["Rubrique", "Valeur"], resume],
   ]);
-  proposerFichier(f, "Logiciel du comité → Import Excel → déposez ce fichier. " +
+  return { fichier: f, nonEncaisse };
+}
+A.exporterZ = async d => {
+  const { fichier, nonEncaisse } = await fichierZ(await DB.lire("sessions", d.id));
+  proposerFichier(fichier, "Logiciel du comité → Import Excel → déposez ce fichier. " +
     (nonEncaisse.length ? "Les paiements en jetons ne sont pas comptés une 2e fois : les jetons ont déjà été encaissés à leur vente." : ""));
 };
+
+// ====================================================================== GOOGLE DRIVE
+const driveConfigure = () => !!S.params.driveClientId;
+async function aEnvoyer() {
+  const sessions = await DB.tous("sessions");
+  const z = sessions.filter(x => x.fermeeLe && !x.envoyeDrive).length;
+  const modifs = !!S.params.derniereModif && (!S.params.derniereSynchro || S.params.derniereModif > S.params.derniereSynchro);
+  return { z, modifs, total: z + (modifs && !z ? 1 : 0) };
+}
+async function majEtatDrive() {
+  if (!driveConfigure()) { S.etatDrive = null; return; }
+  S.etatDrive = await aEnvoyer();
+}
+
+let synchroEnCours = false;
+async function synchroniser({ interactif = false } = {}) {
+  if (!driveConfigure()) { if (interactif) toast("Réglez d'abord Google Drive (Réglages → Google Drive).", "erreur"); return; }
+  if (synchroEnCours) return;
+  if (!navigator.onLine) { if (interactif) toast("Pas de connexion internet : l'envoi se fera plus tard.", "alerte"); return; }
+  if (interactif) await DRIVE.connecter(S.params.driveClientId, S.params.driveCompte);
+  else if (!DRIVE.jetonValide()) return;
+  synchroEnCours = true; S.envoiDrive = true; render();
+  try {
+    const d = await DRIVE.dossiers(S.params.driveDossiers);
+    if (JSON.stringify(d) !== JSON.stringify(S.params.driveDossiers)) await sauverParams({ driveDossiers: d });
+    const sessions = (await DB.tous("sessions")).filter(x => x.fermeeLe && !x.envoyeDrive);
+    for (const x of sessions) {
+      await DRIVE.envoyer((await fichierZ(x)).fichier, d.z);
+      x.envoyeDrive = new Date().toISOString();
+      await DB.ecrire("sessions", x);
+    }
+    const sauvegarde = JSON.stringify(await DB.exporter());
+    await DRIVE.envoyer(new File([sauvegarde], "caisse_base_derniere.json", { type: "application/json" }), d.sauvegardes);
+    await DRIVE.envoyer(new File([sauvegarde], `caisse_sauvegarde_${dateFichier()}.json`, { type: "application/json" }), d.sauvegardes);
+    const maintenant = new Date().toISOString();
+    await sauverParams({ derniereSynchro: maintenant, derniereSauvegarde: maintenant });
+    S.cache = {};
+    toast(sessions.length ? `Drive à jour : ${sessions.length} ticket(s) Z envoyé(s) + sauvegarde` : "Drive à jour : sauvegarde envoyée");
+  } finally {
+    synchroEnCours = false; S.envoiDrive = false;
+    await majEtatDrive(); render();
+  }
+}
+A.synchroniser = () => synchroniser({ interactif: true });
+const synchroDiscrete = () => synchroniser().catch(e => console.warn("Envoi Drive reporté :", e.message));
+window.addEventListener("online", async () => { await majEtatDrive(); render(); if (S.params?.driveAuto) synchroDiscrete(); });
+window.addEventListener("offline", () => render());
+setInterval(() => { if (S.params?.driveAuto && navigator.onLine) synchroDiscrete(); }, 5 * 60 * 1000);
 
 A.sauvegarder = async () => {
   const sauvegarde = await DB.exporter();
@@ -1196,14 +1267,17 @@ VUES.historique = () => {
   return `<div class="page defile">
     <div class="entete-page"><h2>Historique des caisses</h2>
       <div class="boutons-ligne"><button class="secondaire" data-a="exporterVentes">Exporter toutes les ventes</button>
-        <button class="principal" data-a="sauvegarder">💾 Sauvegarder la caisse</button>
+        ${driveConfigure() ? `<button class="principal" data-a="synchroniser">☁️ Envoyer au Drive</button>` : ""}
+        <button class="${driveConfigure() ? "secondaire" : "principal"}" data-a="sauvegarder">💾 Sauvegarder (fichier)</button>
         <label class="bouton secondaire">Restaurer<input type="file" accept=".json" data-c="restaurer" hidden></label></div></div>
-    <p class="discret">Dernière sauvegarde : ${der ? `${dateFr(der)} à ${heureFr(der)}` : "jamais"}.</p>
-    <table class="tableau"><thead><tr><th>Caisse</th><th>Manifestation</th><th>Date</th><th class="d">Ventes</th><th class="d">Écart</th><th></th></tr></thead>
+    <p class="discret">Dernière sauvegarde : ${der ? `${dateFr(der)} à ${heureFr(der)}` : "jamais"}.
+      ${S.params.derniereSynchro ? ` Dernier envoi au Drive : ${dateFr(S.params.derniereSynchro)} à ${heureFr(S.params.derniereSynchro)}.` : ""}</p>
+    <table class="tableau"><thead><tr><th>Caisse</th><th>Manifestation</th><th>Date</th><th class="d">Ventes</th><th class="d">Écart</th><th>Drive</th><th></th></tr></thead>
     <tbody>${S.cache.sessions.map(s => `<tr><td>n° ${s.numero}</td><td>${h(s.manifestation)}</td><td>${dateFr(s.ouverteLe)}</td>
       <td class="d">${s.z ? eur(s.z.totalC) : "en cours"}</td><td class="d ${s.z && s.z.ecartC ? "rouge" : ""}">${s.z ? eur(s.z.ecartC) : ""}</td>
+      <td>${s.envoyeDrive ? `✓ ${dateFr(s.envoyeDrive)}` : s.z ? "à envoyer" : ""}</td>
       <td class="boutons-ligne">${s.z ? `<button class="mini" data-a="exporterZ" data-id="${s.id}">📤 Compta</button>
-        <button class="mini" data-a="imprimerZ" data-id="${s.id}">🖨️ Z</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="6">Aucune caisse.</td></tr>`}</tbody></table></div>`;
+        <button class="mini" data-a="imprimerZ" data-id="${s.id}">🖨️ Z</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="7">Aucune caisse.</td></tr>`}</tbody></table></div>`;
 };
 A.exporterVentes = async () => {
   const tickets = (await DB.tous("tickets")).sort((a, b) => a.date.localeCompare(b.date));
@@ -1259,12 +1333,29 @@ VUES.reglages = () => {
       <h3>Utilisateurs</h3>
       <div class="liste">${S.utilisateurs.map(u => `<button class="ligne-liste" data-a="editerUser" data-id="${u.id}"><span>${h(u.nom)}</span><span>${u.role === "responsable" ? "Responsable" : "Caissier"}</span></button>`).join("")}</div>
       <button class="mini" data-a="editerUser">+ Utilisateur</button>
+      <h3>Google Drive du comité</h3>
+      <form data-f="drive" class="formulaire">
+        <label>Identifiant Google de l'appli (ID client)<input name="driveClientId" value="${h(p.driveClientId || "")}" placeholder="123456-xxxx.apps.googleusercontent.com"></label>
+        <label>Compte Google de l'association<input name="driveCompte" type="email" value="${h(p.driveCompte || "")}" placeholder="comite@gmail.com"></label>
+        <label class="case"><input type="checkbox" name="driveAuto" ${p.driveAuto ? "checked" : ""}> Envoyer automatiquement dès qu'internet est disponible
+          <small>(après une première connexion Google dans la journée ; sinon un bouton « Envoyer » apparaît)</small></label>
+        <button class="secondaire">Enregistrer</button></form>
+      ${p.driveClientId ? `<button class="principal" data-a="synchroniser">☁️ Se connecter et envoyer maintenant</button>
+        <p class="discret">${p.driveDossiers ? (p.driveDossiers.aCoteCompta ? "Dossier : Comité des Fêtes — Logiciel / Caisse (à côté de la compta)." : "Dossier : Comité des Fêtes — Caisse (racine du Drive).") : ""}
+        ${p.derniereSynchro ? ` Dernier envoi : ${dateFr(p.derniereSynchro)} à ${heureFr(p.derniereSynchro)}.` : " Jamais envoyé."}</p>` : ""}
       <h3>Formation</h3>
       <label class="case"><input type="checkbox" data-c="formation" ${p.formation ? "checked" : ""}> Mode formation : ventes d'essai, rien n'est enregistré</label>
       <h3>Zone sensible</h3>
       <button class="danger" data-a="toutEffacer">Effacer toutes les données de la tablette</button>
       <p class="discret">Caisse v${VERSION_APP}</p>
     </div></div></div>`;
+};
+F.drive = async v => {
+  const id = (v.driveClientId || "").trim();
+  if (id && !/\.apps\.googleusercontent\.com$/.test(id)) return toast("L'identifiant doit se terminer par .apps.googleusercontent.com", "erreur");
+  if (id !== S.params.driveClientId) DRIVE.deconnecter();
+  await sauverParams({ driveClientId: id, driveCompte: (v.driveCompte || "").trim(), driveAuto: !!v.driveAuto });
+  await majEtatDrive(); toast("Réglages Drive enregistrés"); render();
 };
 F.reglages = async v => {
   await sauverParams({ nomAsso: v.nomAsso.trim() || "Comité des Fêtes", entete: v.entete, pied: v.pied,

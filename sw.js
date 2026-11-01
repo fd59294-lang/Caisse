@@ -1,7 +1,7 @@
 /* Fonctionnement hors ligne : toute l'appli est gardée sur la tablette.
    Copie locale d'abord (démarrage instantané même sans réseau), mise à jour en arrière-plan. */
-const VERSION = "caisse-v1.0.0";
-const FICHIERS = ["./", "index.html", "style.css", "db.js", "escpos.js", "app.js", "xlsx.full.min.js",
+const VERSION = "caisse-v1.1.0";
+const FICHIERS = ["./", "index.html", "style.css", "db.js", "escpos.js", "drive.js", "app.js", "xlsx.full.min.js",
   "manifest.webmanifest", "icone-192.png", "icone-512.png"];
 
 self.addEventListener("install", e => {
