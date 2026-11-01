@@ -166,6 +166,7 @@ input[type=checkbox], input[type=radio] { min-height: 0; width: 24px; height: 24
 .verrou h1 { margin: 0; } .verrou .discret { color: rgba(255, 255, 255, .7); }
 .tuiles-utilisateurs { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin: 20px 0; }
 .tuile-user { flex-direction: column; width: 150px; min-height: 150px; font-size: 1.1rem; font-weight: 600; }
+.tuile-user.large { width: 230px; min-height: 170px; }
 .tuile-user small { color: var(--texte-2); font-weight: 400; font-size: .85rem; }
 .avatar { width: 64px; height: 64px; border-radius: 50%; background: var(--bleu-clair); color: var(--bleu); display: flex; align-items: center; justify-content: center; font-size: 1.8rem; }
 

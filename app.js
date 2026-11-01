@@ -1,7 +1,7 @@
 /* Caisse du Comité des Fêtes — application autonome, hors ligne, pour tablette Android. */
 "use strict";
 
-const VERSION_APP = "1.1.0";
+const VERSION_APP = "1.2.0";
 const $app = document.getElementById("app");
 const S = {
   params: null, categories: [], articles: [], moyens: [], utilisateurs: [], session: null,
@@ -94,8 +94,10 @@ async function preparerLogo() {
 async function initialiser() {
   try {
     let p = await DB.lire("params", "config");
-    if (!p) { p = paramsDefaut(); await DB.ecrire("params", p); await donneesExemple(); }
+    if (!p) { p = { ...paramsDefaut(), accueil: true, idBase: uid() }; await DB.ecrire("params", p); await donneesExemple(); }
     S.params = { ...paramsDefaut(), ...p };
+    if (!S.params.idBase) await sauverParams({ idBase: uid() });
+    await lireConfig();
     await recharger();
     await preparerLogo();
     await majEtatDrive();
@@ -105,6 +107,21 @@ async function initialiser() {
     return;
   }
   render();
+}
+
+/* config.json (facultatif, dans le dépôt GitHub) : identifiant Google connu dès l'installation,
+   pour pouvoir récupérer la caisse depuis le Drive sans rien ressaisir. */
+async function lireConfig() {
+  try {
+    const r = await fetch("config.json", { cache: "no-cache" });
+    if (!r.ok) return;
+    const c = await r.json();
+    const maj = {};
+    if (c.driveClientId && !S.params.driveClientId) maj.driveClientId = String(c.driveClientId).trim();
+    if (c.driveCompte && !S.params.driveCompte) maj.driveCompte = String(c.driveCompte).trim();
+    if (c.nomAsso && S.params.accueil) maj.nomAsso = String(c.nomAsso).trim();
+    if (Object.keys(maj).length) await sauverParams(maj);
+  } catch (e) { /* pas de config.json : réglages manuels */ }
 }
 
 async function sauverParams(maj = {}) {
@@ -166,6 +183,15 @@ function apresRendu() {
 
 // ====================================================================== verrou / connexion
 function vueVerrou() {
+  if (S.params.accueil) {
+    return `<div class="verrou">
+      <h1>Bienvenue</h1><p>Cette tablette ne contient pas encore de caisse.</p>
+      <div class="tuiles-utilisateurs">
+        <button class="tuile-user large" data-a="recupererDrive"><span class="avatar">☁️</span>Récupérer ma caisse<small>depuis le Google Drive du comité</small></button>
+        <button class="tuile-user large" data-a="caisseVierge"><span class="avatar">✨</span>Nouvelle caisse<small>articles d'exemple, code 1234</small></button>
+      </div>
+      <p class="discret">Tablette réinitialisée ou changée : choisissez « Récupérer ». Articles, prix, stock, utilisateurs, codes et historique reviennent.</p></div>`;
+  }
   return `<div class="verrou">
     <h1>${h(S.params.nomAsso)}</h1><p>Qui tient la caisse ?</p>
     <div class="tuiles-utilisateurs">${S.utilisateurs.map(u => `<button class="tuile-user" data-a="choisirUser" data-id="${u.id}">
@@ -1010,13 +1036,14 @@ async function synchroniser({ interactif = false } = {}) {
     if (JSON.stringify(d) !== JSON.stringify(S.params.driveDossiers)) await sauverParams({ driveDossiers: d });
     const sessions = (await DB.tous("sessions")).filter(x => x.fermeeLe && !x.envoyeDrive);
     for (const x of sessions) {
-      await DRIVE.envoyer((await fichierZ(x)).fichier, d.z);
+      await DRIVE.envoyer((await fichierZ(x)).fichier, d.z, S.params.idBase);
       x.envoyeDrive = new Date().toISOString();
       await DB.ecrire("sessions", x);
     }
     const sauvegarde = JSON.stringify(await DB.exporter());
-    await DRIVE.envoyer(new File([sauvegarde], "caisse_base_derniere.json", { type: "application/json" }), d.sauvegardes);
-    await DRIVE.envoyer(new File([sauvegarde], `caisse_sauvegarde_${dateFichier()}.json`, { type: "application/json" }), d.sauvegardes);
+    const base = await DRIVE.envoyer(new File([sauvegarde], "caisse_base_derniere.json", { type: "application/json" }), d.sauvegardes, S.params.idBase);
+    await DRIVE.envoyer(new File([sauvegarde], `caisse_sauvegarde_${dateFichier()}.json`, { type: "application/json" }), d.sauvegardes, S.params.idBase);
+    if (base.conflit) toast("Une autre caisse est déjà sauvegardée sur le Drive : elle n'a pas été écrasée. Pour la reprendre : Historique → Récupérer depuis le Drive.", "alerte");
     const maintenant = new Date().toISOString();
     await sauverParams({ derniereSynchro: maintenant, derniereSauvegarde: maintenant });
     S.cache = {};
@@ -1027,6 +1054,62 @@ async function synchroniser({ interactif = false } = {}) {
   }
 }
 A.synchroniser = () => synchroniser({ interactif: true });
+
+A.caisseVierge = async () => { await sauverParams({ accueil: false }); render(); };
+
+A.recupererDrive = async () => {
+  if (!driveConfigure()) { S.modal = { type: "idDrive" }; return render(); }
+  if (!navigator.onLine) return toast("Il faut une connexion internet pour récupérer la caisse.", "erreur");
+  await DRIVE.connecter(S.params.driveClientId, S.params.driveCompte);
+  const liste = (await DRIVE.listerSauvegardes())
+    .sort((x, y) => (y.name === "caisse_base_derniere.json") - (x.name === "caisse_base_derniere.json"));
+  if (!liste.length) return toast("Aucune sauvegarde de caisse trouvée sur ce Drive (vérifiez le compte Google choisi).", "erreur");
+  S.modal = { type: "restauration", liste };
+  render();
+};
+function modalIdDrive() {
+  return `<div class="modal petit"><h2>Connexion au Drive du comité</h2>
+    <form data-f="idDrive" class="formulaire">
+      <label>Identifiant Google de l'appli (ID client)<input name="driveClientId" required placeholder="123456-xxxx.apps.googleusercontent.com" data-focus></label>
+      <label>Compte Google de l'association<input name="driveCompte" type="email" placeholder="comite@gmail.com"></label>
+      <p class="discret">L'ID client se trouve dans la console Google : Clients → « Connexion bureau ». Pour ne plus jamais le ressaisir,
+        mettez-le dans le fichier config.json du dépôt GitHub.</p>
+      <div class="boutons"><button type="button" class="secondaire" data-a="fermer">Annuler</button><button class="principal">Continuer</button></div></form></div>`;
+}
+F.idDrive = async v => {
+  const id = v.driveClientId.trim();
+  if (!/\.apps\.googleusercontent\.com$/.test(id)) return toast("L'identifiant doit se terminer par .apps.googleusercontent.com", "erreur");
+  await sauverParams({ driveClientId: id, driveCompte: (v.driveCompte || "").trim() });
+  S.modal = null; render();
+  toast("Touchez de nouveau « Récupérer » pour vous connecter à Google.");
+};
+function modalRestauration(m) {
+  const lib = f => f.name === "caisse_base_derniere.json" ? "Dernier état connu (recommandé)" : f.name.replace(/^caisse_sauvegarde_|\.json$/g, "").replace(/_/g, " ");
+  return `<div class="modal"><h2>Récupérer la caisse</h2>
+    <p>Choisissez la sauvegarde à remettre sur cette tablette. <strong>Tout ce qui est sur la tablette sera remplacé.</strong></p>
+    <div class="liste">${m.liste.map(f => `<button class="ligne-liste" data-a="choisirSauvegarde" data-id="${f.id}">
+      <span><strong>${h(lib(f))}</strong><br><small class="discret">${h(f.name)}</small></span>
+      <span>${dateFr(f.modifiedTime)} ${heureFr(f.modifiedTime)}<br><small class="discret">${Math.max(1, Math.round((+f.size || 0) / 1024))} Ko</small></span></button>`).join("")}</div>
+    <div class="boutons"><button class="secondaire" data-a="fermer">Annuler</button></div></div>`;
+}
+A.choisirSauvegarde = async d => {
+  const f = S.modal.liste.find(x => x.id === d.id);
+  confirmer(`Remplacer le contenu de cette tablette par la sauvegarde du ${dateFr(f.modifiedTime)} à ${heureFr(f.modifiedTime)} ?`, async () => {
+    const garde = { driveClientId: S.params.driveClientId, driveCompte: S.params.driveCompte, driveAuto: S.params.driveAuto };
+    const sauvegarde = await DRIVE.telecharger(f.id);
+    await DB.restaurer(sauvegarde);
+    const p = await DB.lire("params", "config");
+    S.params = { ...paramsDefaut(), ...p };
+    await sauverParams({ accueil: false, idBase: S.params.idBase || uid(),
+      driveClientId: S.params.driveClientId || garde.driveClientId, driveCompte: S.params.driveCompte || garde.driveCompte,
+      driveAuto: S.params.driveAuto ?? garde.driveAuto, derniereSynchro: new Date().toISOString(), derniereModif: null });
+    await recharger(); await preparerLogo(); await majEtatDrive();
+    S.user = null; S.modal = null; S.panier = []; S.derniereVente = null;
+    const nb = (sauvegarde.donnees.tickets || []).length;
+    toast(`Caisse récupérée : ${S.articles.length} articles, ${S.utilisateurs.length} utilisateurs, ${nb} ventes.`);
+    render();
+  });
+};
 const synchroDiscrete = () => synchroniser().catch(e => console.warn("Envoi Drive reporté :", e.message));
 window.addEventListener("online", async () => { await majEtatDrive(); render(); if (S.params?.driveAuto) synchroDiscrete(); });
 window.addEventListener("offline", () => render());
@@ -1269,7 +1352,8 @@ VUES.historique = () => {
       <div class="boutons-ligne"><button class="secondaire" data-a="exporterVentes">Exporter toutes les ventes</button>
         ${driveConfigure() ? `<button class="principal" data-a="synchroniser">☁️ Envoyer au Drive</button>` : ""}
         <button class="${driveConfigure() ? "secondaire" : "principal"}" data-a="sauvegarder">💾 Sauvegarder (fichier)</button>
-        <label class="bouton secondaire">Restaurer<input type="file" accept=".json" data-c="restaurer" hidden></label></div></div>
+        ${driveConfigure() ? `<button class="secondaire" data-a="recupererDrive">☁️ Récupérer depuis le Drive</button>` : ""}
+        <label class="bouton secondaire">Restaurer (fichier)<input type="file" accept=".json" data-c="restaurer" hidden></label></div></div>
     <p class="discret">Dernière sauvegarde : ${der ? `${dateFr(der)} à ${heureFr(der)}` : "jamais"}.
       ${S.params.derniereSynchro ? ` Dernier envoi au Drive : ${dateFr(S.params.derniereSynchro)} à ${heureFr(S.params.derniereSynchro)}.` : ""}</p>
     <table class="tableau"><thead><tr><th>Caisse</th><th>Manifestation</th><th>Date</th><th class="d">Ventes</th><th class="d">Écart</th><th>Drive</th><th></th></tr></thead>
@@ -1474,7 +1558,7 @@ A.vue = d => { S.vue = d.v; S.modal = null; if (["tableau", "historique"].includ
 
 const MODALES = { pin: modalPin, ligne: modalLigne, remise: modalRemise, paiement: modalPaiement, scan: modalScan,
   ouvrir: modalOuvrir, mouvement: modalMouvement, ticket: modalTicket, cloture: modalCloture, "fin-z": modalFinZ,
-  fichier: modalFichier, article: modalArticle, categorie: modalCategorie, ajustement: modalAjustement, moyen: modalMoyen,
+  fichier: modalFichier, article: modalArticle, idDrive: modalIdDrive, restauration: modalRestauration, categorie: modalCategorie, ajustement: modalAjustement, moyen: modalMoyen,
   user: modalUser, confirm: modalConfirm };
 function rendreModal() {
   if (!S.modal) return "";

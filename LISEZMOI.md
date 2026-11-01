@@ -4,7 +4,7 @@ Appli de caisse autonome pour tablette Android : fonctionne sans internet, donn�
 
 ## Mise en ligne (une seule fois, gratuit)
 1. github.com → **+ → New repository** → nom `caisse` → **Public** → Create.
-2. **uploading an existing file** → déposer les 12 fichiers de ce dossier → **Commit changes**.
+2. **uploading an existing file** → déposer les 13 fichiers de ce dossier → **Commit changes**.
 3. **Settings → Pages** → Source : *Deploy from a branch* → Branch : `main` / `(root)` → **Save**.
 4. Après 1 à 2 minutes, l'adresse est : `https://<votre-compte>.github.io/caisse/`
 
@@ -41,6 +41,18 @@ Ensuite :
 - l'envoi est automatique à chaque clôture et toutes les 5 minutes quand internet est là, pendant l'heure qui
   suit une connexion Google ; au-delà, le nuage de la barre devient orange : **un appui** et tout part.
 - sans réseau, rien n'est perdu : tout attend sur la tablette.
+
+## Tablette réinitialisée, perdue ou changée
+1. Installer la caisse sur la tablette comme la première fois.
+2. Écran « Bienvenue » → **Récupérer ma caisse** → connexion au compte Google de l'association → choisir
+   « Dernier état connu » → Confirmer.
+3. Articles, prix, stock, catégories, utilisateurs et codes, réglages, historique et tickets Z reviennent.
+
+Pour que l'identifiant Google soit déjà connu après une réinitialisation, renseignez une fois le fichier
+`config.json` du dépôt GitHub (crayon ✏️ → coller l'ID client entre les guillemets de `driveClientId` → Commit).
+
+Sécurité : une tablette qui repart d'une caisse vierge n'écrase jamais la sauvegarde existante sur le Drive ;
+elle enregistre la sienne sous un autre nom et prévient.
 
 ## Jetons
 Les jetons vendus à l'entrée sont une recette. Payer une boisson en jetons n'est pas recompté
